@@ -23,24 +23,36 @@ wheels/
 # Virtual Environment
 venv/
 ENV/
+env/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+.project
+.pydevproject
 
 # Jupyter Notebook
 .ipynb_checkpoints
+*.ipynb_checkpoints/
 
-# Project specific
-outputs/
+# Data and Results
+data/
+results/
+processed/
+*.nii
+*.nii.gz
+*.mat
+*.h5
+*.pkl
+*.npz
+
+# Logs
+*.log
 logs/
-*.pt
-evaluation/
+tensorboard/
 
-# OS specific
+# OS
 .DS_Store
-.env
-.env.local
-.env.*.local
+Thumbs.db

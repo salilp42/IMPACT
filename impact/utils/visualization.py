@@ -12,6 +12,11 @@ from nilearn import plotting, image
 import nibabel as nib
 from scipy.stats import zscore
 import pandas as pd
+import torch
+from matplotlib.colors import LinearSegmentedColormap
+from scipy.stats import mannwhitneyu
+from scipy.cluster.hierarchy import linkage, leaves_list
+from scipy.spatial.distance import squareform
 
 def plot_roi_timeseries(
     timeseries: np.ndarray,
@@ -367,3 +372,248 @@ def plot_group_differences(
         plt.close()
     else:
         plt.show()
+
+def setup_plotting_style():
+    """Set up consistent plotting style."""
+    sns.set_style("white")
+    plt.rcParams['figure.figsize'] = (10, 6)
+    plt.rcParams['font.size'] = 12
+    plt.rcParams['axes.labelsize'] = 14
+    plt.rcParams['axes.titlesize'] = 16
+    plt.rcParams['figure.titlesize'] = 18
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Arial']
+    plt.rcParams['axes.grid'] = True
+    plt.rcParams['grid.alpha'] = 0.3
+    plt.rcParams['axes.spines.top'] = False
+    plt.rcParams['axes.spines.right'] = False
+
+def plot_attention_weights(attention_weights: torch.Tensor,
+                         save_path: Path,
+                         roi_labels: Optional[List[str]] = None):
+    """
+    Plot attention weights from transformer layers.
+    
+    Args:
+        attention_weights: Tensor of shape [n_layers, n_heads, seq_len, seq_len]
+        save_path: Path to save the visualization
+        roi_labels: Optional list of ROI labels
+    """
+    setup_plotting_style()
+    n_layers = attention_weights.shape[0]
+    n_heads = attention_weights.shape[1]
+    
+    fig, axes = plt.subplots(n_layers, n_heads, 
+                            figsize=(4*n_heads, 4*n_layers),
+                            squeeze=False)
+    
+    for layer in range(n_layers):
+        for head in range(n_heads):
+            ax = axes[layer, head]
+            attn = attention_weights[layer, head].cpu().numpy()
+            
+            sns.heatmap(attn, ax=ax, cmap='viridis', square=True)
+            ax.set_title(f'Layer {layer+1}, Head {head+1}')
+            
+            if roi_labels is not None:
+                ax.set_xticklabels(roi_labels, rotation=45, ha='right')
+                ax.set_yticklabels(roi_labels, rotation=0)
+            
+    plt.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_roi_importance(importance_scores: np.ndarray,
+                       roi_labels: List[str],
+                       save_path: Path,
+                       title: str = "ROI Importance Analysis"):
+    """
+    Plot ROI importance scores as a radar plot.
+    
+    Args:
+        importance_scores: Array of importance scores for each ROI
+        roi_labels: List of ROI labels
+        save_path: Path to save the visualization
+        title: Title for the plot
+    """
+    setup_plotting_style()
+    
+    # Normalize scores
+    scores = (importance_scores - importance_scores.min()) / (importance_scores.max() - importance_scores.min())
+    
+    # Create radar plot
+    angles = np.linspace(0, 2*np.pi, len(roi_labels), endpoint=False)
+    scores = np.concatenate((scores, [scores[0]]))  # complete the circle
+    angles = np.concatenate((angles, [angles[0]]))  # complete the circle
+    
+    fig, ax = plt.subplots(figsize=(12, 12), subplot_kw=dict(projection='polar'))
+    ax.plot(angles, scores)
+    ax.fill(angles, scores, alpha=0.25)
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(roi_labels, size=8)
+    ax.set_title(title, pad=20)
+    
+    plt.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_network_analysis(correlation_matrix: np.ndarray,
+                         roi_labels: List[str],
+                         save_path: Path,
+                         threshold: float = 0.5,
+                         title: str = "Brain Network Analysis"):
+    """
+    Plot brain network analysis using NetworkX.
+    
+    Args:
+        correlation_matrix: Correlation matrix between ROIs
+        roi_labels: List of ROI labels
+        save_path: Path to save the visualization
+        threshold: Correlation threshold for drawing edges
+        title: Title for the plot
+    """
+    setup_plotting_style()
+    
+    # Create graph
+    G = nx.Graph()
+    n_rois = len(roi_labels)
+    
+    # Add nodes and edges
+    for i in range(n_rois):
+        G.add_node(i, label=roi_labels[i])
+        for j in range(i+1, n_rois):
+            if abs(correlation_matrix[i,j]) > threshold:
+                G.add_edge(i, j, weight=abs(correlation_matrix[i,j]))
+    
+    # Set up layout
+    pos = nx.spring_layout(G, k=1/np.sqrt(n_rois), iterations=50)
+    
+    # Draw network
+    plt.figure(figsize=(15, 15))
+    
+    # Draw edges with varying thickness
+    edge_weights = [G[u][v]['weight'] for u,v in G.edges()]
+    nx.draw_networkx_edges(G, pos, alpha=0.2, 
+                          width=[w*3 for w in edge_weights])
+    
+    # Draw nodes
+    node_size = 1000
+    nx.draw_networkx_nodes(G, pos, node_size=node_size,
+                          node_color='lightblue',
+                          alpha=0.6)
+    
+    # Add labels
+    labels = nx.get_node_attributes(G, 'label')
+    nx.draw_networkx_labels(G, pos, labels, font_size=8)
+    
+    plt.title(title)
+    plt.axis('off')
+    
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_gradcam_analysis(gradcam_weights: np.ndarray,
+                         time_series: np.ndarray,
+                         save_path: Path,
+                         roi_labels: Optional[List[str]] = None,
+                         title: str = "GradCAM Analysis"):
+    """
+    Plot GradCAM analysis results.
+    
+    Args:
+        gradcam_weights: GradCAM weights for each time point
+        time_series: Original time series data
+        save_path: Path to save the visualization
+        roi_labels: Optional list of ROI labels
+        title: Title for the plot
+    """
+    setup_plotting_style()
+    
+    n_timepoints = len(gradcam_weights)
+    n_rois = time_series.shape[1]
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), height_ratios=[1, 3])
+    
+    # Plot GradCAM weights
+    ax1.plot(gradcam_weights, color='red', alpha=0.6)
+    ax1.set_title("GradCAM Weights")
+    ax1.set_xlabel("Time")
+    ax1.set_ylabel("Importance")
+    
+    # Plot time series with highlighting
+    for roi in range(n_rois):
+        color = plt.cm.viridis(roi/n_rois)
+        ax2.plot(time_series[:, roi], color=color, alpha=0.6,
+                label=roi_labels[roi] if roi_labels else f"ROI {roi}")
+    
+    # Add highlighting based on GradCAM weights
+    normalized_weights = (gradcam_weights - gradcam_weights.min()) / (gradcam_weights.max() - gradcam_weights.min())
+    ax2.fill_between(range(n_timepoints), ax2.get_ylim()[0], ax2.get_ylim()[1],
+                     color='red', alpha=normalized_weights*0.3)
+    
+    ax2.set_title("Time Series with GradCAM Highlighting")
+    ax2.set_xlabel("Time")
+    ax2.set_ylabel("BOLD Signal")
+    if roi_labels:
+        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    plt.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+def plot_statistical_comparison(pd_data: np.ndarray,
+                              hc_data: np.ndarray,
+                              save_path: Path,
+                              roi_labels: Optional[List[str]] = None,
+                              title: str = "Statistical Comparison"):
+    """
+    Plot statistical comparison between PD and HC groups.
+    
+    Args:
+        pd_data: Data for PD group
+        hc_data: Data for HC group
+        save_path: Path to save the visualization
+        roi_labels: Optional list of ROI labels
+        title: Title for the plot
+    """
+    setup_plotting_style()
+    
+    n_features = pd_data.shape[1]
+    p_values = []
+    effect_sizes = []
+    
+    for i in range(n_features):
+        stat, p = mannwhitneyu(pd_data[:, i], hc_data[:, i])
+        effect_size = stat / (len(pd_data) * len(hc_data))
+        p_values.append(p)
+        effect_sizes.append(effect_size)
+    
+    # Create plot
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+    
+    # Plot p-values
+    ax1.bar(range(n_features), -np.log10(p_values))
+    ax1.axhline(-np.log10(0.05), color='r', linestyle='--', label='p=0.05')
+    ax1.set_title("Statistical Significance (-log10 p-value)")
+    if roi_labels:
+        ax1.set_xticks(range(n_features))
+        ax1.set_xticklabels(roi_labels, rotation=45, ha='right')
+    ax1.legend()
+    
+    # Plot effect sizes
+    ax2.bar(range(n_features), effect_sizes)
+    ax2.set_title("Effect Size")
+    if roi_labels:
+        ax2.set_xticks(range(n_features))
+        ax2.set_xticklabels(roi_labels, rotation=45, ha='right')
+    
+    plt.suptitle(title)
+    plt.tight_layout()
+    
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()

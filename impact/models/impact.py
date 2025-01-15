@@ -183,131 +183,206 @@ class TransformerEncoderLayer(nn.Module):
         
         return src, attention
 
-class IMPACTModel(nn.Module):
-    """Main IMPACT model."""
+class DynamicTemporalBlock(nn.Module):
+    """Multi-scale temporal convolution block with dynamic gating."""
     
-    def __init__(
-        self,
-        roi_dim: int,
-        ica_dim: int,
-        n_classes: int = 2,
-        embed_dim: int = 256,
-        n_heads: int = 4,
-        n_layers: int = 3,
-        dropout: float = 0.1
-    ):
+    def __init__(self, in_channels: int, out_channels: int, kernel_sizes: list = [3, 5, 7]):
+        super().__init__()
+        self.convs = nn.ModuleList([
+            nn.Conv1d(in_channels, out_channels, k, padding=k//2) 
+            for k in kernel_sizes
+        ])
+        self.gate = nn.Sequential(
+            nn.Linear(out_channels * len(kernel_sizes), out_channels),
+            nn.Sigmoid()
+        )
+        self.norm = nn.LayerNorm(out_channels)
+        self.dropout = nn.Dropout(0.2)
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_conv = x.transpose(1, 2)
+        conv_outputs = []
+        for conv in self.convs:
+            conv_out = conv(x_conv)
+            conv_outputs.append(conv_out.transpose(1, 2))
+        
+        multi_scale = torch.cat(conv_outputs, dim=-1)
+        gate_weights = self.gate(multi_scale)
+        
+        output = sum(gate_weights * conv_out for conv_out in conv_outputs)
+        return self.dropout(self.norm(output))
+
+class CorrelationEncoder(nn.Module):
+    """Encodes correlation matrices using 2D convolutions."""
+    
+    def __init__(self, n_rois: int, hidden_dim: int):
+        super().__init__()
+        self.n_rois = n_rois
+
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 32, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(32)
+
+        self.gap = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten()
+        )
+
+        self.proj = nn.Sequential(
+            nn.Linear(32, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = 0.5 * (x + x.transpose(-2,-1))
+        x = x.unsqueeze(1)
+
+        x = self.bn1(F.gelu(self.conv1(x)))
+        x = F.dropout(x, p=0.2, training=self.training)
+
+        x = self.bn2(F.gelu(self.conv2(x)))
+        x = F.dropout(x, p=0.2, training=self.training)
+
+        x = self.bn3(F.gelu(self.conv3(x)))
+        x = self.gap(x)
+        
+        return self.proj(x)
+
+class MultiHeadAttention(nn.Module):
+    """Multi-head attention with linear projections."""
+    
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        
+        self.dropout = nn.Dropout(dropout)
+        self.scale = self.head_dim ** -0.5
+
+    def forward(self, 
+                query: torch.Tensor,
+                key: torch.Tensor,
+                value: torch.Tensor,
+                mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size = query.shape[0]
+        
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        v = self.v_proj(value)
+        
+        q = q.reshape(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.reshape(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.reshape(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+        
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float('-inf'))
+        
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        
+        attn_output = torch.matmul(attn_weights, v)
+        attn_output = attn_output.transpose(1, 2).reshape(batch_size, -1, self.embed_dim)
+        
+        return self.out_proj(attn_output), attn_weights
+
+class TransformerEncoder(nn.Module):
+    """Transformer encoder with multi-head attention and feed-forward layers."""
+    
+    def __init__(self, embed_dim: int, num_heads: int, ff_dim: int = 2048, dropout: float = 0.1):
+        super().__init__()
+        self.attention = MultiHeadAttention(embed_dim, num_heads, dropout)
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.ff = nn.Sequential(
+            nn.Linear(embed_dim, ff_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ff_dim, embed_dim)
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        attn_output, attn_weights = self.attention(x, x, x, mask)
+        x = self.norm1(x + self.dropout(attn_output))
+        x = self.norm2(x + self.dropout(self.ff(x)))
+        return x, attn_weights
+
+class IMPACTModel(nn.Module):
+    """
+    IMPACT: Integrative Multimodal Pipeline for Advanced Connectivity and Time-series.
+    A transformer-based model for analyzing fMRI time series data.
+    """
+    
+    def __init__(self,
+                 roi_dim: int,
+                 ica_dim: int,
+                 roi_hidden_dim: int = 256,
+                 ica_hidden_dim: int = 256,
+                 n_heads: int = 8,
+                 n_layers: int = 2,
+                 dropout: float = 0.12):
         super().__init__()
         
-        self.roi_dim = roi_dim
-        self.ica_dim = ica_dim
-        self.embed_dim = embed_dim
+        # ROI stream
+        self.roi_temporal = DynamicTemporalBlock(roi_dim, roi_hidden_dim)
+        self.roi_corr = CorrelationEncoder(roi_dim, roi_hidden_dim)
         
-        # Input projections
-        self.roi_proj = nn.Linear(roi_dim, embed_dim)
-        self.ica_proj = nn.Linear(ica_dim, embed_dim)
-        self.conn_proj = nn.Sequential(
-            nn.Linear(roi_dim * roi_dim, embed_dim * 2),
-            nn.GELU(),
-            nn.Linear(embed_dim * 2, embed_dim)
-        )
-        
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(embed_dim)
+        # ICA stream
+        self.ica_temporal = DynamicTemporalBlock(ica_dim, ica_hidden_dim)
         
         # Transformer layers
-        self.layers = nn.ModuleList([
-            TransformerEncoderLayer(
-                embed_dim,
-                n_heads,
-                embed_dim * 4,
-                dropout
-            ) for _ in range(n_layers)
+        self.transformers = nn.ModuleList([
+            TransformerEncoder(roi_hidden_dim + ica_hidden_dim, n_heads, dropout=dropout)
+            for _ in range(n_layers)
         ])
         
-        # Cross-modal fusion
-        self.fusion = nn.Sequential(
-            nn.Linear(embed_dim * 3, embed_dim * 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(embed_dim * 2, embed_dim)
-        )
-        
-        # Output layers
+        # Classification head
         self.classifier = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 2),
+            nn.Linear(roi_hidden_dim + ica_hidden_dim, 256),
+            nn.LayerNorm(256),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(embed_dim // 2, n_classes)
+            nn.Linear(256, 2)
         )
         
-        # Initialize weights
-        self.apply(self._init_weights)
+        self.attention_weights = None
     
-    def _init_weights(self, module):
-        """Initialize weights using Xavier uniform."""
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)
-    
-    def forward(
-        self,
-        batch: Dict[str, torch.Tensor]
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        Forward pass of IMPACT model.
+    def forward(self, roi_ts: torch.Tensor, ica_ts: torch.Tensor, corr: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Process ROI time series
+        roi_temp = self.roi_temporal(roi_ts)
+        roi_corr = self.roi_corr(corr).unsqueeze(1).expand(-1, roi_temp.size(1), -1)
+        roi_features = roi_temp + roi_corr
         
-        Args:
-            batch: Dictionary containing:
-                - roi: ROI time series (batch_size, seq_len, roi_dim)
-                - ica: ICA time series (batch_size, seq_len, ica_dim)
-                - conn: Connectivity matrices (batch_size, n_windows, roi_dim, roi_dim)
+        # Process ICA time series
+        ica_features = self.ica_temporal(ica_ts)
         
-        Returns:
-            logits: Classification logits
-            attention_weights: Dictionary of attention weights from each modality
-        """
-        roi_data = batch['roi']
-        ica_data = batch['ica']
-        conn_data = batch['conn']
+        # Combine features
+        features = torch.cat([roi_features, ica_features], dim=-1)
         
-        batch_size = roi_data.size(0)
+        # Apply transformer layers
+        self.attention_weights = []
+        for transformer in self.transformers:
+            features, attn = transformer(features)
+            self.attention_weights.append(attn)
         
-        # Project inputs
-        roi = self.roi_proj(roi_data)
-        ica = self.ica_proj(ica_data)
+        # Global average pooling and classification
+        features = features.mean(dim=1)
+        logits = self.classifier(features)
         
-        # Flatten and project connectivity matrices
-        conn = conn_data.view(batch_size, -1, self.roi_dim * self.roi_dim)
-        conn = self.conn_proj(conn)
-        
-        # Add positional encoding
-        roi = self.pos_encoder(roi)
-        ica = self.pos_encoder(ica)
-        conn = self.pos_encoder(conn)
-        
-        # Process each modality through transformer
-        attention_weights = {'roi': [], 'ica': [], 'conn': []}
-        
-        for layer in self.layers:
-            roi, roi_attn = layer(roi)
-            ica, ica_attn = layer(ica)
-            conn, conn_attn = layer(conn)
-            
-            attention_weights['roi'].append(roi_attn)
-            attention_weights['ica'].append(ica_attn)
-            attention_weights['conn'].append(conn_attn)
-        
-        # Global pooling
-        roi = roi.mean(dim=1)
-        ica = ica.mean(dim=1)
-        conn = conn.mean(dim=1)
-        
-        # Fuse modalities
-        fused = torch.cat([roi, ica, conn], dim=-1)
-        fused = self.fusion(fused)
-        
-        # Classification
-        logits = self.classifier(fused)
-        
-        return logits, attention_weights
+        return logits, self.attention_weights

@@ -1,32 +1,87 @@
-# IMPACT: Integrative Multimodal Pipeline for Advanced Connectivity and Timeseries
+# IMPACT: Integrative Multimodal Pipeline for Advanced Connectivity and Time-series
 
-IMPACT is a transformer-based framework for analyzing resting-state fMRI data in Parkinson's Disease (PD). It treats fMRI data as a time-evolving sequence rather than a static map, enabling the capture of subtle temporal patterns that may be indicative of early disease processes.
+## Overview
+
+IMPACT is a transformer-based framework for analyzing resting-state fMRI data in Parkinson's Disease (PD). Unlike traditional approaches that treat fMRI data as static connectivity maps, IMPACT views brain activity as a dynamic sequence of states, enabling the capture of subtle temporal patterns that may be indicative of early disease processes.
+
+### Key Innovations
+
+1. **Dynamic Temporal Processing**: Captures transient disruptions in functional connectivity that are often averaged out in traditional static analyses.
+2. **Multi-scale Integration**: Combines information across different temporal scales and spatial organizations of brain activity.
+3. **Interpretable Architecture**: Provides insights into which brain regions and time periods contribute most to the model's decisions.
+
+## Background
+
+Parkinson's Disease diagnosis currently relies heavily on motor symptoms, which typically appear after significant neurodegeneration has occurred. Early detection through neuroimaging biomarkers could enable earlier intervention and better patient outcomes. IMPACT addresses this challenge by:
+
+- Analyzing dynamic functional connectivity patterns in resting-state fMRI
+- Integrating multiple streams of information (ROI time series, ICA components, connectivity matrices)
+- Using attention mechanisms to identify disease-relevant temporal patterns
+- Providing interpretable results that align with clinical understanding of PD
 
 ## Features
 
-- **Multimodal Integration**: Combines multiple feature streams including:
+### Data Processing
+- **Dataset Agnostic Processing**: 
+  - Flexible data loading system supporting multiple dataset formats
+  - Built-in support for Neurocon and Tao Wu datasets
+  - Extensible design for adding new dataset loaders
+  - Automated quality control and preprocessing
+
+### Analysis Pipeline
+- **Multimodal Integration**: 
   - Regional time courses from anatomically defined brain areas
   - ICA-derived network patterns
   - Time-varying functional connectivity estimates
+  - Dynamic state analysis
 
-- **Advanced Architecture**: 
-  - Transformer-based design for capturing long-range temporal dependencies
-  - Selective attention to informative time intervals and brain regions
-  - Multi-head attention mechanism for parallel feature processing
+### Model Architecture
+- **Advanced Transformer Design**:
+  - Multi-head attention for parallel feature processing
+  - Dynamic temporal convolution blocks
+  - Cross-modal fusion mechanism
+  - Adaptive gating for temporal feature selection
 
-- **Interpretability**:
+### Visualization & Analysis
+- **Comprehensive Visualization Suite**:
   - GradCAM visualization for feature importance
   - Attention weight analysis
   - Network-level statistical analysis
+  - Dynamic connectivity visualization
+  - ROI importance mapping
 
-## Dataset
+## Repository Structure
 
-This project uses the [Neurocon dataset](https://fcon_1000.projects.nitrc.org/indi/retro/parkinsons.html) from NITRC, which includes resting-state fMRI data from Parkinson's Disease patients and healthy controls. To use this dataset:
-
-1. Visit the [NITRC website](https://fcon_1000.projects.nitrc.org/indi/retro/parkinsons.html)
-2. Register and accept the data usage agreement
-3. Download the dataset
-4. Organize the data as described in the example notebook
+```
+IMPACT/
+├── impact/                      # Main package directory
+│   ├── data/                   # Data processing modules
+│   │   ├── processor.py        # Core fMRI processing logic
+│   │   └── loaders.py         # Dataset-specific loaders
+│   ├── models/                 # Model architectures
+│   │   └── impact.py          # Main IMPACT model implementation
+│   ├── training/              # Training infrastructure
+│   │   └── trainer.py         # Training loop and utilities
+│   ├── utils/                 # Utility functions
+│   │   ├── visualization.py   # Visualization tools
+│   │   └── metrics.py        # Evaluation metrics
+│   ├── evaluate.py            # Evaluation scripts
+│   └── train.py              # Training scripts
+├── examples/                   # Usage examples
+│   ├── train_model.py        # Example training script
+│   └── process_datasets.py    # Data processing example
+├── docs/                      # Documentation
+│   ├── installation.md       # Installation guide
+│   ├── usage.md             # Usage documentation
+│   └── api/                 # API documentation
+├── notebooks/                 # Jupyter notebooks
+│   ├── demo.ipynb           # Demo notebook
+│   └── analysis.ipynb       # Analysis examples
+├── tests/                    # Unit tests
+├── setup.py                  # Package installation
+├── requirements.txt          # Dependencies
+└── README.md                 # This file
+```
 
 ## Installation
 
@@ -39,101 +94,65 @@ cd IMPACT
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install the package
+pip install -e .
 ```
 
-## Project Structure
+## Quick Start
 
-```
-IMPACT/
-├── impact/
-│   ├── __init__.py
-│   ├── data/
-│   │   ├── __init__.py
-│   │   ├── loader.py        # Data loading utilities
-│   │   └── preprocessor.py  # Data preprocessing pipeline
-│   ├── models/
-│   │   ├── __init__.py
-│   │   └── impact.py        # Main IMPACT model
-│   └── utils/
-│       ├── __init__.py
-│       ├── visualization.py  # Plotting utilities
-│       └── metrics.py       # Evaluation metrics
-├── notebooks/
-│   └── example.ipynb        # Usage examples
-├── tests/
-│   └── __init__.py
-├── requirements.txt
-└── README.md
-```
-
-## Usage
-
-See `notebooks/example.ipynb` for a complete example. Here's a quick overview:
+### Processing a Dataset
 
 ```python
-from impact.data.loader import IMPACTDataLoader
-from impact.models.impact import IMPACTModel
+from impact.data.loaders import TaoWuLoader, NeuroconLoader
 
-# Load and preprocess data
-loader = IMPACTDataLoader(data_path="path/to/data")
-train_loader, val_loader, test_loader = loader.get_dataloaders()
-
-# Initialize and train model
-model = IMPACTModel(
-    roi_dim=train_loader.dataset.roi_data.size(-1),
-    ica_dim=train_loader.dataset.ica_data.size(-1),
-    embed_dim=256,
-    n_heads=4,
-    n_layers=3
+# For Tao Wu dataset
+loader = TaoWuLoader(
+    base_dir="/path/to/taowu/data",
+    output_dir="/path/to/output"
 )
-
-# Train model (see example notebook for full training loop)
-model.train()
-...
-
-# Make predictions
-model.eval()
-with torch.no_grad():
-    logits, attention = model(inputs)
-    predictions = torch.argmax(logits, dim=1)
+loader.process_dataset()
 ```
 
-## Training Scripts
+### Training a Model
 
-The project includes two main scripts for training and evaluation:
-
-1. `impact/train.py`: Main training script with the following features:
-   - Command-line argument parsing
-   - TensorBoard logging
-   - Early stopping
-   - Model checkpointing
-   - Learning rate scheduling
-
-2. `impact/evaluate.py`: Evaluation script that provides:
-   - ROC curve plotting
-   - Attention weight visualization
-   - Brain importance mapping
-   - Comprehensive metric computation
-
-Run training:
-```bash
-python -m impact.train \
-    --data_dir path/to/data \
-    --output_dir outputs \
-    --batch_size 8 \
-    --lr 1e-4 \
-    --epochs 100
+```python
+# Example command-line usage
+python -m examples.train_model \
+    --dataset taowu \
+    --data_dir /path/to/data \
+    --processed_dir /path/to/processed \
+    --output_dir /path/to/results \
+    --visualize
 ```
 
-Run evaluation:
-```bash
-python -m impact.evaluate \
-    --model_path path/to/model.pt \
-    --data_dir path/to/test_data \
-    --output_dir evaluation
+## Extending IMPACT
+
+### Adding Support for New Datasets
+
+Create a new loader class that inherits from `BaseDatasetLoader`:
+
+```python
+from impact.data.loaders import BaseDatasetLoader
+
+class CustomDatasetLoader(BaseDatasetLoader):
+    def find_subjects(self):
+        subjects = []
+        # Implement dataset-specific logic
+        return subjects
 ```
+
+### Customizing the Model
+
+The model architecture is modular and can be customized:
+- Modify the temporal processing blocks in `DynamicTemporalBlock`
+- Adjust the attention mechanism in `MultiHeadAttention`
+- Add new feature streams to `IMPACTModel`
+
+## Performance
+
+IMPACT achieves high performance in PD detection:
+- Neurocon dataset: AUC 0.977 (95% CI: 0.931–1.000)
+- Tao Wu dataset: AUC 0.973 (95% CI: 0.924–0.994)
 
 ## Citation
 
@@ -148,10 +167,11 @@ If you use IMPACT in your research, please cite:
 }
 ```
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+We welcome contributions! Please see our [contributing guidelines](CONTRIBUTING.md) for details.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
