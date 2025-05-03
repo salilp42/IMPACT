@@ -161,8 +161,6 @@ If you use IMPACT in your research, please cite:
 ```bibtex
 @article{impact2024,
   title={IMPACT: A Transformer-based Framework for Dynamic fMRI Analysis in Parkinson's Disease},
-  author={Salil Patel},
-  journal={},
   year={2024}
 }
 ```
